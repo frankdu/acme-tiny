@@ -13,7 +13,18 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.StreamHandler())
 LOGGER.setLevel(logging.INFO)
 
-def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check=False, directory_url=DEFAULT_DIRECTORY_URL, contact=None, check_port=None):
+
+def get_crt(
+    account_key,
+    csr,
+    acme_dir,
+    log=LOGGER,
+    CA=DEFAULT_CA,
+    disable_check=False,
+    directory_url=DEFAULT_DIRECTORY_URL,
+    contact=None,
+    check_port=None
+):
     directory, acct_headers, alg, jwk = None, None, None, None # global variables
 
     # helper functions - base64 encode for jose spec
@@ -134,17 +145,21 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
         # find the http-01 challenge and write the challenge file
         challenge = [c for c in authorization['challenges'] if c['type'] == "http-01"][0]
         token = re.sub(r"[^A-Za-z0-9_\-]", "_", challenge['token'])
-        keyauthorization = "{0}.{1}".format(token, thumbprint)
+        key_authorization = f"{token}.{thumbprint}"
+        print(f"key_authorization = key_authorization")
         wellknown_path = os.path.join(acme_dir, token)
         with open(wellknown_path, "w") as wellknown_file:
-            wellknown_file.write(keyauthorization)
+            print(f"Writing key_authorization to file: {wellknown_file}")
+            wellknown_file.write(key_authorization)
+            print("Writing key_authorization done!")
 
         # check that the file is in place
         try:
-            wellknown_url = "http://{0}{1}/.well-known/acme-challenge/{2}".format(domain, "" if check_port is None else ":{0}".format(check_port), token)
-            assert (disable_check or _do_request(wellknown_url)[0] == keyauthorization)
+            port_str = "" if not check_port else f":{check_port}"
+            wellknown_url = f"http://{domain}{port_str}/.well-known/acme-challenge/{token}"
+            assert (disable_check or _do_request(wellknown_url)[0] == key_authorization)
         except (AssertionError, ValueError) as e:
-            raise ValueError("Wrote file to {0}, but couldn't download {1}: {2}".format(wellknown_path, wellknown_url, e))
+            raise ValueError(f"Wrote file to {wellknown_path}, but couldn't download {wellknown_url}: {e}")
 
         # say the challenge is done
         _send_signed_request(challenge['url'], {}, "Error submitting challenges: {0}".format(domain))
@@ -168,6 +183,7 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
     certificate_pem, _, _ = _send_signed_request(order['certificate'], None, "Certificate download failed")
     log.info("Certificate signed!")
     return certificate_pem
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
@@ -194,6 +210,7 @@ def main(argv=None):
     LOGGER.setLevel(args.quiet or LOGGER.level)
     signed_crt = get_crt(args.account_key, args.csr, args.acme_dir, log=LOGGER, CA=args.ca, disable_check=args.disable_check, directory_url=args.directory_url, contact=args.contact, check_port=args.check_port)
     sys.stdout.write(signed_crt)
+
 
 if __name__ == "__main__": # pragma: no cover
     main(sys.argv[1:])
