@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
-# Copyright Daniel Roesler, under MIT license, see LICENSE at github.com/diafygi/acme-tiny
-import argparse, subprocess, json, os, sys, base64, binascii, time, hashlib, re, copy, textwrap, logging
+
+# MIT license. Forked from github.com/diafygi/acme-tiny
+import argparse
+import base64
+import binascii
+import hashlib
+import json
+import logging
+import os
+import re
+import subprocess
+import sys
+import textwrap
+import time
+
 try:
     from urllib.request import urlopen, Request # Python 3
 except ImportError: # pragma: no cover
@@ -9,7 +22,8 @@ except ImportError: # pragma: no cover
 DEFAULT_CA = "https://acme-v02.api.letsencrypt.org" # DEPRECATED! USE DEFAULT_DIRECTORY_URL INSTEAD
 DEFAULT_DIRECTORY_URL = "https://acme-v02.api.letsencrypt.org/directory"
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+LOGGER = logger
 LOGGER.addHandler(logging.StreamHandler())
 LOGGER.setLevel(logging.INFO)
 
@@ -36,25 +50,29 @@ def get_crt(
         proc = subprocess.Popen(cmd_list, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = proc.communicate(cmd_input)
         if proc.returncode != 0:
-            raise IOError("{0}\n{1}".format(err_msg, err))
+            raise IOError(f"{err_msg}\n{err}")
         return out
 
     # helper function - make request and automatically parse json response
     def _do_request(url, data=None, err_msg="Error", depth=0):
         try:
-            resp = urlopen(Request(url, data=data, headers={"Content-Type": "application/jose+json", "User-Agent": "acme-tiny"}))
+            request = Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/jose+json", "User-Agent": "acme-tiny"})
+            resp = urlopen(request)
             resp_data, code, headers = resp.read().decode("utf8"), resp.getcode(), resp.headers
         except IOError as e:
             resp_data = e.read().decode("utf8") if hasattr(e, "read") else str(e)
             code, headers = getattr(e, "code", None), {}
         try:
-            resp_data = json.loads(resp_data) # try to parse json results
-        except ValueError:
-            pass # ignore json parsing errors
+            resp_data = json.loads(resp_data)
+        except ValueError as valueError:
+            logger.exception("Error in parse response data as json!", valueError)
         if depth < 100 and code == 400 and resp_data['type'] == "urn:ietf:params:acme:error:badNonce":
             raise IndexError(resp_data) # allow 100 retrys for bad nonces
         if code not in [200, 201, 204]:
-            raise ValueError("{0}:\nUrl: {1}\nData: {2}\nResponse Code: {3}\nResponse: {4}".format(err_msg, url, data, code, resp_data))
+            raise ValueError(f"{err_msg}:\nUrl: {url}\nData: {data}\nResponse Code: {code}\nResponse: {resp_data}")
         return resp_data, code, headers
 
     # helper function - make signed requests
@@ -64,8 +82,12 @@ def get_crt(
         protected = {"url": url, "alg": alg, "nonce": new_nonce}
         protected.update({"jwk": jwk} if acct_headers is None else {"kid": acct_headers['Location']})
         protected64 = _b64(json.dumps(protected).encode('utf8'))
-        protected_input = "{0}.{1}".format(protected64, payload64).encode('utf8')
-        out = _cmd(["openssl", "dgst", "-sha256", "-sign", account_key], stdin=subprocess.PIPE, cmd_input=protected_input, err_msg="OpenSSL Error")
+        protected_input = f"{protected64}.{payload64}".encode('utf8')
+        out = _cmd(
+            ["openssl", "dgst", "-sha256", "-sign", account_key],
+            stdin=subprocess.PIPE,
+            cmd_input=protected_input,
+            err_msg="OpenSSL Error")
         data = json.dumps({"protected": protected64, "payload": payload64, "signature": _b64(out)})
         try:
             return _do_request(url, data=data.encode('utf8'), err_msg=err_msg, depth=depth)
@@ -86,8 +108,8 @@ def get_crt(
     out = _cmd(["openssl", "rsa", "-in", account_key, "-noout", "-text"], err_msg="OpenSSL Error")
     pub_pattern = r"modulus:[\s]+?00:([a-f0-9\:\s]+?)\npublicExponent: ([0-9]+)"
     pub_hex, pub_exp = re.search(pub_pattern, out.decode('utf8'), re.MULTILINE|re.DOTALL).groups()
-    pub_exp = "{0:x}".format(int(pub_exp))
-    pub_exp = "0{0}".format(pub_exp) if len(pub_exp) % 2 else pub_exp
+    pub_exp = f"{pub_exp:x}"
+    pub_exp = f"0{pub_exp}" if len(pub_exp) % 2 else pub_exp
     alg, jwk = "RS256", {
         "e": _b64(binascii.unhexlify(pub_exp.encode("utf-8"))),
         "kty": "RSA",
@@ -98,17 +120,24 @@ def get_crt(
 
     # find domains
     log.info("Parsing CSR...")
-    out = _cmd(["openssl", "req", "-in", csr, "-noout", "-text"], err_msg="Error loading {0}".format(csr))
+    out = _cmd(
+        ["openssl", "req", "-in", csr, "-noout", "-text"],
+        err_msg=f"Error loading {csr}",
+    )
     domains = set([])
     common_name = re.search(r"Subject:.*? CN\s?=\s?([^\s,;/]+)", out.decode('utf8'))
     if common_name is not None:
         domains.add(common_name.group(1))
-    subject_alt_names = re.search(r"X509v3 Subject Alternative Name: (?:critical)?\n +([^\n]+)\n", out.decode('utf8'), re.MULTILINE|re.DOTALL)
+    subject_alt_names = re.search(
+        r"X509v3 Subject Alternative Name: (?:critical)?\n +([^\n]+)\n",
+        out.decode('utf8'),
+        re.MULTILINE | re.DOTALL)
     if subject_alt_names is not None:
         for san in subject_alt_names.group(1).split(", "):
             if san.startswith("DNS:"):
                 domains.add(san[4:])
-    log.info(u"Found domains: {0}".format(", ".join(domains)))
+    domain_list_str = ", ".join(domains)
+    log.info(f"Found domains: {domain_list_str}")
 
     # get the ACME directory of urls
     log.info("Getting directory...")
@@ -120,10 +149,13 @@ def get_crt(
     log.info("Registering account...")
     reg_payload = {"termsOfServiceAgreed": True} if contact is None else {"termsOfServiceAgreed": True, "contact": contact}
     account, code, acct_headers = _send_signed_request(directory['newAccount'], reg_payload, "Error registering")
-    log.info("{0} Account ID: {1}".format("Registered!" if code == 201 else "Already registered!", acct_headers['Location']))
+    registered_status = "Registered!" if code == 201 else "Already registered!"
+    account_id = acct_headers['Location']
+    log.info(f"{registered_status} Account ID: {account_id}")
     if contact is not None:
         account, _, _ = _send_signed_request(acct_headers['Location'], {"contact": contact}, "Error updating contact details")
-        log.info("Updated contact details:\n{0}".format("\n".join(account['contact'])))
+        contact_list = "\n".join(account['contact'])
+        log.info(f"Updated contact details:\n{contact_list}")
 
     # create a new order
     log.info("Creating new order...")
@@ -138,9 +170,9 @@ def get_crt(
 
         # skip if already valid
         if authorization['status'] == "valid":
-            log.info("Already verified: {0}, skipping...".format(domain))
+            log.info(f"Already verified: {domain}, skipping...")
             continue
-        log.info("Verifying {0}...".format(domain))
+        log.info(f"Verifying {domain}...")
 
         # find the http-01 challenge and write the challenge file
         challenge = [c for c in authorization['challenges'] if c['type'] == "http-01"][0]
@@ -162,12 +194,14 @@ def get_crt(
             raise ValueError(f"Wrote file to {wellknown_path}, but couldn't download {wellknown_url}: {e}")
 
         # say the challenge is done
-        _send_signed_request(challenge['url'], {}, "Error submitting challenges: {0}".format(domain))
-        authorization = _poll_until_not(auth_url, ["pending"], "Error checking challenge status for {0}".format(domain))
+        _send_signed_request(challenge['url'], {}, f"Error submitting challenges: {domain}")
+        authorization = _poll_until_not(
+            auth_url, ["pending"],
+            f"Error checking challenge status for {domain}")
         if authorization['status'] != "valid":
-            raise ValueError("Challenge did not pass for {0}: {1}".format(domain, authorization))
+            raise ValueError(f"Challenge did not pass for {domain}: {authorization}")
         os.remove(wellknown_path)
-        log.info("{0} verified!".format(domain))
+        log.info(f"{domain} verified!")
 
     # finalize the order with the csr
     log.info("Signing certificate...")
@@ -177,7 +211,7 @@ def get_crt(
     # poll the order to monitor when it's done
     order = _poll_until_not(order_headers['Location'], ["pending", "processing"], "Error checking order status")
     if order['status'] != "valid":
-        raise ValueError("Order failed: {0}".format(order))
+        raise ValueError(f"Order failed: {order}")
 
     # download the certificate
     certificate_pem, _, _ = _send_signed_request(order['certificate'], None, "Certificate download failed")
