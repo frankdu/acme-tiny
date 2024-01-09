@@ -23,16 +23,14 @@ DEFAULT_CA = "https://acme-v02.api.letsencrypt.org" # DEPRECATED! USE DEFAULT_DI
 DEFAULT_DIRECTORY_URL = "https://acme-v02.api.letsencrypt.org/directory"
 
 logger = logging.getLogger(__name__)
-LOGGER = logger
-LOGGER.addHandler(logging.StreamHandler())
-LOGGER.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler())
+logger.setLevel(logging.INFO)
 
 
 def get_crt(
     account_key,
     csr,
     acme_dir,
-    log=LOGGER,
     CA=DEFAULT_CA,
     disable_check=False,
     directory_url=DEFAULT_DIRECTORY_URL,
@@ -104,7 +102,7 @@ def get_crt(
         return result
 
     # parse account key to get public key
-    log.info("Parsing account key...")
+    logger.info("Parsing account key...")
     out = _cmd(["openssl", "rsa", "-in", account_key, "-noout", "-text"], err_msg="OpenSSL Error")
     pub_pattern = r"modulus:[\s]+?00:([a-f0-9\:\s]+?)\npublicExponent: ([0-9]+)"
     pub_hex, pub_exp = re.search(pub_pattern, out.decode('utf8'), re.MULTILINE|re.DOTALL).groups()
@@ -119,7 +117,7 @@ def get_crt(
     thumbprint = _b64(hashlib.sha256(accountkey_json.encode('utf8')).digest())
 
     # find domains
-    log.info("Parsing CSR...")
+    logger.info("Parsing CSR...")
     out = _cmd(
         ["openssl", "req", "-in", csr, "-noout", "-text"],
         err_msg=f"Error loading {csr}",
@@ -137,31 +135,31 @@ def get_crt(
             if san.startswith("DNS:"):
                 domains.add(san[4:])
     domain_list_str = ", ".join(domains)
-    log.info(f"Found domains: {domain_list_str}")
+    logger.info(f"Found domains: {domain_list_str}")
 
     # get the ACME directory of urls
-    log.info("Getting directory...")
+    logger.info("Getting directory...")
     directory_url = CA + "/directory" if CA != DEFAULT_CA else directory_url # backwards compatibility with deprecated CA kwarg
     directory, _, _ = _do_request(directory_url, err_msg="Error getting directory")
-    log.info("Directory found!")
+    logger.info("Directory found!")
 
     # create account, update contact details (if any), and set the global key identifier
-    log.info("Registering account...")
+    logger.info("Registering account...")
     reg_payload = {"termsOfServiceAgreed": True} if contact is None else {"termsOfServiceAgreed": True, "contact": contact}
     account, code, acct_headers = _send_signed_request(directory['newAccount'], reg_payload, "Error registering")
     registered_status = "Registered!" if code == 201 else "Already registered!"
     account_id = acct_headers['Location']
-    log.info(f"{registered_status} Account ID: {account_id}")
+    logger.info(f"{registered_status} Account ID: {account_id}")
     if contact is not None:
         account, _, _ = _send_signed_request(acct_headers['Location'], {"contact": contact}, "Error updating contact details")
         contact_list = "\n".join(account['contact'])
-        log.info(f"Updated contact details:\n{contact_list}")
+        logger.info(f"Updated contact details:\n{contact_list}")
 
     # create a new order
-    log.info("Creating new order...")
+    logger.info("Creating new order...")
     order_payload = {"identifiers": [{"type": "dns", "value": d} for d in domains]}
     order, _, order_headers = _send_signed_request(directory['newOrder'], order_payload, "Error creating new order")
-    log.info("Order created!")
+    logger.info("Order created!")
 
     # get the authorizations that need to be completed
     for auth_url in order['authorizations']:
@@ -170,9 +168,9 @@ def get_crt(
 
         # skip if already valid
         if authorization['status'] == "valid":
-            log.info(f"Already verified: {domain}, skipping...")
+            logger.info(f"Already verified: {domain}, skipping...")
             continue
-        log.info(f"Verifying {domain}...")
+        logger.info(f"Verifying {domain}...")
 
         # find the http-01 challenge and write the challenge file
         challenge = [c for c in authorization['challenges'] if c['type'] == "http-01"][0]
@@ -201,10 +199,10 @@ def get_crt(
         if authorization['status'] != "valid":
             raise ValueError(f"Challenge did not pass for {domain}: {authorization}")
         os.remove(wellknown_path)
-        log.info(f"{domain} verified!")
+        logger.info(f"{domain} verified!")
 
     # finalize the order with the csr
-    log.info("Signing certificate...")
+    logger.info("Signing certificate...")
     csr_der = _cmd(["openssl", "req", "-in", csr, "-outform", "DER"], err_msg="DER Export Error")
     _send_signed_request(order['finalize'], {"csr": _b64(csr_der)}, "Error finalizing order")
 
@@ -215,7 +213,7 @@ def get_crt(
 
     # download the certificate
     certificate_pem, _, _ = _send_signed_request(order['certificate'], None, "Certificate download failed")
-    log.info("Certificate signed!")
+    logger.info("Certificate signed!")
     return certificate_pem
 
 
@@ -241,8 +239,16 @@ def main(argv=None):
     parser.add_argument("--check-port", metavar="PORT", default=None, help="what port to use when self-checking the challenge file, default is port 80")
 
     args = parser.parse_args(argv)
-    LOGGER.setLevel(args.quiet or LOGGER.level)
-    signed_crt = get_crt(args.account_key, args.csr, args.acme_dir, log=LOGGER, CA=args.ca, disable_check=args.disable_check, directory_url=args.directory_url, contact=args.contact, check_port=args.check_port)
+    logger.setLevel(args.quiet or logger.level)
+    signed_crt = get_crt(
+        args.account_key,
+        args.csr,
+        args.acme_dir,
+        CA=args.ca,
+        disable_check=args.disable_check,
+        directory_url=args.directory_url,
+        contact=args.contact,
+        check_port=args.check_port)
     sys.stdout.write(signed_crt)
 
 
